@@ -290,6 +290,23 @@ button{touch-action:manipulation}
 <!-- ================= SETTINGS ================= -->
 <section id="tab-settings" hidden>
   <div class="card">
+    <div class="card-h"><h2>Sync across devices</h2><span class="mu" id="syncStatus">Not connected</span></div>
+    <p class="mu" style="margin:0 0 12px">Keeps your bets, API keys and scan settings the same on your PC and phone. Data is encrypted with your sync password before it is saved to a private GitHub repository you own.</p>
+    <div class="form">
+      <div class="f"><label>GitHub repository (owner/name)</label><input type="text" id="syncRepo" data-nosave placeholder="e.g. yourname/arbscan-data" autocapitalize="none" autocomplete="off"></div>
+      <div class="f"><label>GitHub token</label><input type="password" id="syncToken" data-nosave placeholder="github_pat_..." autocomplete="off"></div>
+      <div class="f"><label>Sync password (make one up, same on every device)</label><input type="password" id="syncPass" data-nosave placeholder="used to encrypt your data" autocomplete="off"></div>
+    </div>
+    <div class="row"><button class="btn pri" id="syncSave">Save &amp; sync now</button><button class="btn ghost" id="syncOff">Disconnect this device</button></div>
+    <details style="margin-top:12px"><summary class="mu" style="cursor:pointer">How to set this up</summary>
+      <ol class="mu" style="margin:8px 0 0;padding-left:18px;line-height:1.7">
+        <li>On GitHub, create a new <b>private</b> repository (e.g. <b>arbscan-data</b>) and tick "Add a README file".</li>
+        <li>GitHub &rarr; your profile picture &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens &rarr; Fine-grained tokens &rarr; Generate new token.</li>
+        <li>Repository access: <b>Only select repositories</b>, choose arbscan-data. Permissions &rarr; Repository permissions &rarr; <b>Contents: Read and write</b>. Generate and copy the token.</li>
+        <li>Enter the repository, token and a sync password here, then Save. Do the same on your other device.</li>
+      </ol></details>
+  </div>
+  <div class="card">
     <div class="card-h"><h2>Odds API</h2></div>
     <div class="form">
       <div class="f"><label>Odds API key</label><input type="password" id="key" placeholder="paste key"></div>
@@ -629,6 +646,7 @@ function updFeeds() {
   const f = feeds();
   $('rbsum').textContent = f.length ? `${f.length} feed${f.length > 1 ? 's' : ''}: ${f.join(', ')}` : 'Select feeds';
   try { localStorage.setItem('arbscan_rfeeds', JSON.stringify(f)); } catch (e) {}
+  touchSettings();
   drawChips();
 }
 
@@ -643,7 +661,7 @@ function loadExcl() {
   try { a = JSON.parse(localStorage.getItem('arbscan_excl') || 'null'); } catch (e) {}
   EXCL = new Set(a || ['unibet']);       // first run: Unibet excluded by default
 }
-function saveExcl() { try { localStorage.setItem('arbscan_excl', JSON.stringify([...EXCL])); } catch (e) {} }
+function saveExcl() { try { localStorage.setItem('arbscan_excl', JSON.stringify([...EXCL])); } catch (e) {} touchSettings(); }
 function drawExcl() {
   const all = new Map(KNOWN_BOOKS.map(b => [bkey(b), b]));
   for (const [k, n] of Object.entries(SEEN_BOOKS)) if (!all.has(k)) all.set(k, n);
@@ -758,7 +776,7 @@ function drawChips() {
   }
   $('cost').textContent = txt;
 }
-function saveScan() { try { localStorage.setItem('arbscan_list', JSON.stringify(SCAN)); } catch (e) {} }
+function saveScan() { try { localStorage.setItem('arbscan_list', JSON.stringify(SCAN)); } catch (e) {} touchSettings(); }
 function loadScan() {
   try { SCAN = JSON.parse(localStorage.getItem('arbscan_list') || 'null'); } catch (e) { SCAN = null; }
   if (!SCAN) {
@@ -824,9 +842,10 @@ function readCfg() {
 }
 function save() {
   try {
-    const s = {}; document.querySelectorAll('input[id]:not([type=file])').forEach(i => s[i.id] = i.type === 'checkbox' ? i.checked : i.value);
+    const s = {}; document.querySelectorAll('input[id]:not([type=file]):not([data-nosave])').forEach(i => s[i.id] = i.type === 'checkbox' ? i.checked : i.value);
     localStorage.setItem('arbscan', JSON.stringify(s));
   } catch (e) {}
+  touchSettings();
 }
 function load() {
   try {
@@ -930,8 +949,25 @@ function classify(o) {
 
 // ---------------------------------------------------------- ledger
 let BETS = [];
-function loadBets() { try { BETS = JSON.parse(localStorage.getItem('arbscan_bets') || '[]'); } catch (e) { BETS = []; } if (!Array.isArray(BETS)) BETS = []; }
-function saveBets() { try { localStorage.setItem('arbscan_bets', JSON.stringify(BETS)); } catch (e) { toast('Could not save - browser storage unavailable'); } }
+// Every bet carries u (last-changed time) and deletions are remembered (TOMB) so two devices can be merged safely.
+let SNAP = {}, TOMB = {};
+const stripU = b => JSON.stringify({ ...b, u: undefined });
+function loadBets() {
+  try { BETS = JSON.parse(localStorage.getItem('arbscan_bets') || '[]'); } catch (e) { BETS = []; } if (!Array.isArray(BETS)) BETS = [];
+  try { TOMB = JSON.parse(localStorage.getItem('arbscan_tomb') || '{}') || {}; } catch (e) { TOMB = {}; }
+  SNAP = {};
+  for (const b of BETS) { if (!b.u) b.u = Date.parse(b.settledAt || b.placedAt) || 1; SNAP[b.id] = stripU(b); }
+}
+function stampBets() {
+  const now = Date.now(), ids = new Set();
+  for (const b of BETS) { ids.add(b.id); const j = stripU(b); if (SNAP[b.id] !== j) { b.u = now; SNAP[b.id] = j; } }
+  for (const id of Object.keys(SNAP)) if (!ids.has(id)) { TOMB[id] = now; delete SNAP[id]; }
+}
+function persistBets() {
+  try { localStorage.setItem('arbscan_bets', JSON.stringify(BETS)); localStorage.setItem('arbscan_tomb', JSON.stringify(TOMB)); }
+  catch (e) { toast('Could not save - browser storage unavailable'); }
+}
+function saveBets() { stampBets(); persistBets(); queueSync(); }
 const totalStake = e => e.legs.reduce((a, l) => a + l.stake, 0);
 function addBet(o) {
   if (BETS.some(b => b.oid === o.id)) return;
@@ -1360,6 +1396,129 @@ async function boxGo() {
   }
 }
 
+
+// ---------------------------------------------------------- cross-device sync (encrypted file in a private GitHub repo)
+const SYNC_FILE = 'arbscan-data.json';
+let SU = 0, SETSIG = '', SYNCING = false, SYNC_AGAIN = false, SYNC_TIMER = null, APPLYING = false, LAST_AUTO = 0;
+const b64 = u8 => { let t = ''; u8.forEach(x => t += String.fromCharCode(x)); return btoa(t); };
+const unb64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+async function deriveKey(pass, salt) {
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function encryptJSON(obj, pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await deriveKey(pass, salt), new TextEncoder().encode(JSON.stringify(obj)));
+  return { v: 1, salt: b64(salt), iv: b64(iv), data: b64(new Uint8Array(ct)) };
+}
+async function decryptJSON(blob, pass) {
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(blob.iv) }, await deriveKey(pass, unb64(blob.salt)), unb64(blob.data));
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch (e) { throw new Error('Wrong sync password, or that file is not from ArbScan.'); }
+}
+function syncCfg() { try { const c = JSON.parse(localStorage.getItem('arbscan_sync') || 'null'); return c && c.repo && c.token && c.pass ? c : null; } catch (e) { return null; } }
+function setSyncStatus(t) { const el = $('syncStatus'); if (el) el.textContent = t; }
+function getSettings() {
+  const g = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+  return { main: g('arbscan'), list: g('arbscan_list'), feeds: g('arbscan_rfeeds'), excl: g('arbscan_excl'), sports: g('arbscan_sports') };
+}
+function applySettings(o) {
+  const put = (k, v) => { if (v != null) localStorage.setItem(k, JSON.stringify(v)); };
+  put('arbscan', o.main); put('arbscan_list', o.list); put('arbscan_rfeeds', o.feeds); put('arbscan_excl', o.excl); put('arbscan_sports', o.sports);
+  load(); loadScan(); fillSports(); drawMarkets(); drawChips(); drawFeeds(); loadExcl(); drawExcl();
+  SETSIG = JSON.stringify(getSettings());
+}
+function touchSettings() {
+  if (APPLYING) return;
+  const sig = JSON.stringify(getSettings()); if (sig === SETSIG) return;
+  SETSIG = sig; SU = Date.now();
+  try { localStorage.setItem('arbscan_su', String(SU)); } catch (e) {}
+  queueSync();
+}
+function mergeData(L, R, firstSync) {
+  const tomb = { ...(R.tomb || {}) };
+  for (const [id, t] of Object.entries(L.tomb || {})) tomb[id] = Math.max(tomb[id] || 0, t);
+  const cutoff = Date.now() - 180 * 864e5; for (const id of Object.keys(tomb)) if (tomb[id] < cutoff) delete tomb[id];
+  const byId = new Map();
+  for (const b of R.bets || []) byId.set(b.id, b);
+  for (const b of L.bets || []) { const o = byId.get(b.id); if (!o || (b.u || 0) >= (o.u || 0)) byId.set(b.id, b); }
+  const bets = [...byId.values()].filter(b => !(tomb[b.id] && tomb[b.id] >= (b.u || 0)));
+  const remoteWins = !!R.settings && (firstSync || (R.su || 0) > (L.su || 0));
+  return { bets, tomb, su: remoteWins ? (R.su || 0) : (L.su || 0), settings: remoteWins ? R.settings : L.settings, remoteWins };
+}
+const dataSig = d => JSON.stringify({ b: (d.bets || []).map(b => [b.id, b.u]).sort(), t: Object.entries(d.tomb || {}).sort(), su: d.su || 0 });
+function queueSync() {
+  if (APPLYING || !syncCfg()) return;
+  clearTimeout(SYNC_TIMER); SYNC_TIMER = setTimeout(() => syncNow(false), 2500);
+}
+async function syncNow(manual) {
+  const c = syncCfg();
+  if (!c) { if (manual) toast('Fill in repository, token and sync password first'); return; }
+  if (SYNCING) { SYNC_AGAIN = true; return; }
+  SYNCING = true; setSyncStatus('Syncing...');
+  try {
+    const url = `https://api.github.com/repos/${c.repo.trim()}/contents/${SYNC_FILE}`;
+    const hdr = { Authorization: 'Bearer ' + c.token.trim(), Accept: 'application/vnd.github+json' };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let sha = null, remote = { bets: [], tomb: {}, su: 0, settings: null };
+      const r = await fetch(url, { headers: hdr });
+      if (r.status === 404) {
+        const probe = await fetch(`https://api.github.com/repos/${c.repo.trim()}`, { headers: hdr });
+        if (probe.status === 404) throw new Error('Repository not found. Check the name, and that the token has access to it.');
+      } else if (r.status === 401 || r.status === 403) throw new Error('GitHub rejected the token. It needs Contents: Read and write on that repository.');
+      else if (!r.ok) throw new Error('GitHub error ' + r.status);
+      else { const j = await r.json(); sha = j.sha; remote = await decryptJSON(JSON.parse(atob(j.content.replace(/\s/g, ''))), c.pass); }
+      if (!SU && localStorage.getItem('arbscan')) { SU = Date.now(); try { localStorage.setItem('arbscan_su', String(SU)); } catch (e) {} }
+      const firstSync = !localStorage.getItem('arbscan_synced');
+      const m = mergeData({ bets: BETS, tomb: TOMB, su: SU, settings: getSettings() }, remote, firstSync);
+      // apply to this device
+      APPLYING = true;
+      try {
+        BETS = m.bets; TOMB = m.tomb; SNAP = {}; BETS.forEach(b => SNAP[b.id] = stripU(b)); persistBets();
+        if (m.remoteWins) { SU = m.su; try { localStorage.setItem('arbscan_su', String(SU)); } catch (e) {} applySettings(m.settings); }
+      } finally { APPLYING = false; }
+      refreshTracker(); draw();
+      // push if the shared file is out of date
+      const out = { v: 1, bets: m.bets, tomb: m.tomb, su: m.su, settings: m.settings };
+      if (sha === null || dataSig(out) !== dataSig(remote)) {
+        const body = { message: 'ArbScan sync', content: btoa(JSON.stringify(await encryptJSON(out, c.pass))) };
+        if (sha) body.sha = sha;
+        const w = await fetch(url, { method: 'PUT', headers: { ...hdr, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (w.status === 409 || w.status === 422) continue;           // someone else wrote first: merge again
+        if (!w.ok) throw new Error('Could not save to GitHub (' + w.status + ')');
+      }
+      try { localStorage.setItem('arbscan_synced', '1'); } catch (e) {}
+      setSyncStatus('Synced ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+      if (manual) toast('Synced');
+      return;
+    }
+    throw new Error('Sync kept conflicting, try again.');
+  } catch (e) {
+    const msg = /fetch/i.test(String(e.message)) ? 'Could not reach GitHub. Check your connection.' : e.message;
+    setSyncStatus('Sync failed: ' + msg); if (manual) toast('Sync failed');
+  } finally { SYNCING = false; if (SYNC_AGAIN) { SYNC_AGAIN = false; queueSync(); } }
+}
+function initSync() {
+  try { SU = +localStorage.getItem('arbscan_su') || 0; } catch (e) {}
+  SETSIG = JSON.stringify(getSettings());
+  const c = syncCfg();
+  if (c) { $('syncRepo').value = c.repo; $('syncToken').value = c.token; $('syncPass').value = c.pass; setSyncStatus('Connected'); setTimeout(() => syncNow(false), 600); }
+  $('syncSave').onclick = () => {
+    const cfg = { repo: $('syncRepo').value.trim(), token: $('syncToken').value.trim(), pass: $('syncPass').value };
+    if (!/^[\w.-]+\/[\w.-]+$/.test(cfg.repo)) return toast('Repository should look like owner/name');
+    if (!cfg.token || !cfg.pass) return toast('Enter the token and a sync password');
+    try { localStorage.setItem('arbscan_sync', JSON.stringify(cfg)); } catch (e) {}
+    syncNow(true);
+  };
+  $('syncOff').onclick = () => {
+    try { localStorage.removeItem('arbscan_sync'); localStorage.removeItem('arbscan_synced'); } catch (e) {}
+    $('syncToken').value = ''; $('syncPass').value = ''; setSyncStatus('Not connected'); toast('This device is disconnected');
+  };
+  const auto = () => { if (document.hidden || !syncCfg() || Date.now() - LAST_AUTO < 20000) return; LAST_AUTO = Date.now(); syncNow(false); };
+  document.addEventListener('visibilitychange', auto); window.addEventListener('focus', auto);
+}
+
 // ---------------------------------------------------------- tabs & theme
 function showTab(name) {
   for (const t of ['scan', 'bets', 'results', 'settings']) $('tab-' + t).hidden = t !== name;
@@ -1406,7 +1565,7 @@ if (typeof document !== 'undefined') {
   $('demo').onclick = () => scan(true);
   $('auto').onchange = () => { save(); setAuto(); };
   $('filters').onclick = e => { if (e.target.dataset.f) { FILTER = e.target.dataset.f; draw(); } };
-  loadBets(); seedWalsh(); refreshHead();
+  loadBets(); seedWalsh(); refreshHead(); initSync();
   try { const th = localStorage.getItem('arbscan_theme'); if (th) setTheme(th); } catch (e) {}
   $('theme').onclick = () => {
     const cur = document.documentElement.getAttribute('data-theme') || ((window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light');
